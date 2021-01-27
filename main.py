@@ -7,10 +7,9 @@ from aiogram.dispatcher.filters import Text
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from os import listdir
 from time import strptime, sleep
-from utility import generate_event_text
+from utility import generate_event_text, load_data, dump_data
 from notifications_manager import set_up_notification, delete_notification
 from config import BOT_TOKEN
-import ujson
 
 
 # We set up bot and storage in RAM in order to save user states
@@ -49,24 +48,25 @@ async def cmd_start(message: types.Message):
         if file.startswith(str(message.from_user.id)):
             await message.answer("You already have an account")
             break
-    else: # if doesnt brake above
+    else:  # if doesnt break above
         # We create a file for user where we will store all information we need
-        with open("users/" + str(message.from_user.id) + ".json", "w") as user_file:
-            data = {
-                "user_id": str(message.from_user.id),
-                "records": 0,
-                "events": []
-            }
-            ujson.dump(data, user_file)
-            user_file.close()
+        data = {
+            "user_id": message.from_user.id,
+            "records": 0,
+            "events": []
+        }
+        dump_data(user_data=data)
+
+        print("New user: " + message.from_user.username)
 
         # We create inline keyboard and buttons which will trigger our callbacks
         # handlers
         keyboard = types.InlineKeyboardMarkup()
-        button_standart = types.InlineKeyboardButton(text="Create recommended schedule", callback_data="add_recommended")
-        button_custom = types.InlineKeyboardButton(text="Create custom Schedule", callback_data="add_custom")
-        keyboard.add(button_standart)
-        keyboard.add(button_custom)
+        buttons = [
+            types.InlineKeyboardButton(text="Create recommended schedule", callback_data="add_recommended"),
+            types.InlineKeyboardButton(text="Create custom Schedule", callback_data="add_custom")
+        ]
+        keyboard.add(*buttons)
 
         await message.answer(text="Please choose an option....", reply_markup=keyboard)
 
@@ -81,15 +81,16 @@ async def add_recommended(call: types.CallbackQuery):
 @dp.callback_query_handler(text="add_custom")
 async def add_custom(call: types.CallbackQuery):
     # We open a user file and check that he hasnt exceeded the limit for records
-    user_file = open("users/" + str(call.from_user.id) + ".json", "r")
-    user_data = ujson.load(user_file)
+    user_data = load_data(call.from_user.id)
     # we restrict amount of records user can have so that he doesn't abuse the bot
     # might be a good idea to implement VIP users????
     if user_data["records"] >= 8:
+        print(call.from_user.username + " is trying to overcome the limit")
         await call.message.answer(text="You can't create more records!")
-        sleep(1)
+        sleep(0.5)
         await display_main_menu(call.message)
     else:
+        print(call.from_user.username + " is creating new event")
         await SetEvent.waiting_for_event_name.set()
         await call.message.answer(text="Please input the name of the event:")
 
@@ -107,7 +108,7 @@ async def get_event_name(message: types.Message, state: FSMContext):
     await SetEvent.next()
 
 
-@dp.message_handler(state=SetEvent.waiting_for_event_time)
+@dp.message_handler(state=SetEvent.waiting_for_event_time, content_types=types.ContentTypes.TEXT)
 async def get_event_time(message: types.Message, state: FSMContext):
     # We use "time" module to process users input
     # if user gave us incorrect input we ask him to try again
@@ -123,7 +124,7 @@ async def get_event_time(message: types.Message, state: FSMContext):
     await SetEvent.next()
 
 
-@dp.message_handler(state=SetEvent.waiting_for_event_weekday)
+@dp.message_handler(state=SetEvent.waiting_for_event_weekday, content_types=types.ContentTypes.TEXT)
 async def get_event_weekday(message: types.Message, state: FSMContext):
     # Here we do the same process as for time
     try:
@@ -137,14 +138,14 @@ async def get_event_weekday(message: types.Message, state: FSMContext):
     await SetEvent.next()
 
 
-@dp.message_handler(state=SetEvent.waiting_for_event_location)
+@dp.message_handler(state=SetEvent.waiting_for_event_location, content_types=types.ContentTypes.TEXT)
 async def get_event_time(message: types.Message, state: FSMContext):
     await state.update_data(event_location=message.text)
     await message.answer(text="Additional information:")
     await SetEvent.next()
 
 
-@dp.message_handler(state=SetEvent.waiting_for_event_extra)
+@dp.message_handler(state=SetEvent.waiting_for_event_extra, content_types=types.ContentTypes.TEXT)
 async def get_event_time(message: types.Message, state: FSMContext):
     # We ask user for the final piece of data
     # Then via inline keyboard callback handler is called which
@@ -166,8 +167,7 @@ async def create_event(call: types.CallbackQuery, state: FSMContext):
     event = await state.get_data()
     await state.finish()
     await state.reset_state()
-    user_file = open("users/" + str(call.from_user.id) + ".json", "r")
-    user_data = ujson.load(user_file)
+    user_data = load_data(call.from_user.id)
     user_data["records"] += 1
     user_data["events"].append({})
     user_data["events"][user_data["records"] - 1] = event
@@ -176,15 +176,15 @@ async def create_event(call: types.CallbackQuery, state: FSMContext):
                         event=user_data["events"][user_data["records"] - 1]
                         )
     user_data["events"][user_data["records"] - 1]["reminder_set"] = False
-    user_file = open("users/" + str(call.from_user.id) + ".json", "w")
-    ujson.dump(user_data, user_file)
+    dump_data(user_data)
+    print(call.from_user.username + " have created new event")
     await call.answer()
     await display_main_menu(call.message)
 
 
 @dp.callback_query_handler(text="forget", state=SetEvent.finishing_up)
 async def forget_event(call: types.CallbackQuery, state: FSMContext):
-    print(call.message.chat.id)
+    print(call.from_user.username + " have canceled event creation")
     await state.finish()
     await state.reset_state()
     await call.answer()
@@ -194,8 +194,7 @@ async def forget_event(call: types.CallbackQuery, state: FSMContext):
 # We Display users events as buttons on which he can click to see an event details!
 @dp.callback_query_handler(text="display")
 async def display_events(call: types.CallbackQuery):
-    user_file = open("users/" + str(call.from_user.id) + ".json", "r")
-    user_data = ujson.load(user_file)
+    user_data = load_data(call.from_user.id)
     buttons = []
     n_records = user_data["records"]
     for i in range(n_records):
@@ -213,8 +212,7 @@ async def display_events(call: types.CallbackQuery):
 @dp.callback_query_handler(Text(startswith="disp_"))
 async def show_event(call: types.CallbackQuery):
     event_num = int(call.data.split("_")[1])
-    user_file = open("users/" + str(call.from_user.id) + ".json", "r")
-    user_data = ujson.load(user_file)
+    user_data = load_data(call.from_user.id)
     event = user_data["events"][event_num]
     # we user html <b> tag to make text bold
     event_output = generate_event_text(event)
@@ -237,15 +235,15 @@ async def show_main_menu(call: types.CallbackQuery):
 @dp.callback_query_handler(Text(startswith="del_"))
 async def delete_event(call: types.CallbackQuery):
     event_num = int(call.data.split("_")[1])
-    user_file = open("users/" + str(call.from_user.id) + ".json", "r")
-    user_data = ujson.load(user_file)
+    user_data = load_data(call.from_user.id)
     delete_notification(event_id=user_data["events"][event_num]["event_id"])
     user_data["events"].pop(event_num)
     user_data["records"] -= 1
-    user_file = open("users/" + str(call.from_user.id) + ".json", "w")
-    ujson.dump(user_data, user_file)
+    dump_data(user_data)
+    print(call.from_user.username + " have deleted event")
     await call.answer()
     await display_main_menu(call.message)
 
 if __name__ == "__main__":
     executor.start_polling(dp, skip_updates=True)
+
