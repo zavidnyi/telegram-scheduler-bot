@@ -13,7 +13,7 @@ DELAY = -30
 
 def create_job(event_id: int, chat_id: int, text: str, wday: str,  time: str):
     print(event_id, chat_id, text, wday, time)
-    my_cron = CronTab(user="zavid")
+    my_cron = CronTab(user="your_user_name")
     command_at = 'python3 /home/zavid/Scheduler_Bot/sender.py {0!s} \'{1!s}\''.format(chat_id, text)
     job = my_cron.new(command=command_at, comment=str(event_id))
     job.enable()
